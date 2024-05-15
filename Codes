@@ -1,0 +1,131 @@
+library(data.table)
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(dlnm)
+library(survival)
+library(meta)
+library(gnm)
+#Cancer sites by ICD-10 code
+ICD<-list(
+  Oral=c("C00","C01","C02","C03","C04",
+         "C05","C06","C07","C08","C09","C10","C12","C13","C14"),
+  Nasopharynx=c("C11"),
+  Oesophagus=c("C15"),
+  tomach  =c("C16"),
+  Colon.rectum = (paste("C",18:21,sep = "")),
+  Liver =c("C22"),
+  Gallbladder =(paste("C",23:24,sep = "")), 
+  Pancreas=c("C25"),
+  Larynx=c("C32"),
+  Lung  =c("C33","C34"),
+  Other.thoracic =c("C37","C38"),
+  Bone  =c("C40","C41"),
+  Skin =c("C43"),
+  Breast =c("C50"),
+  Cervix=c("C53"),
+  Uterus=c("C54","C55"),
+  Ovary=c("C56"),
+  Prostate=c("C61"),
+  Testis=c("C62"),
+  Kidney=c(paste("C",64:66,sep = ""),"C68"),
+  Bladder=c("C67"),
+  Brain=(paste("C",70:72,sep = "")),
+  Thyroid=c("C73"),
+  Lymphoma=c(paste("C",81:85,sep = ""),"C88","C90","C96"),
+  Leukaemia=(paste("C",91:95,sep = "")))
+ICD
+
+#Main model
+Teffect<-setNames(data.frame(matrix(ncol = 4,nrow=1)),c("OR","CIL",
+                                                        "CIH","p-value"))
+
+for (i in 1:length(ICD)){
+  tryCatch({
+    data_i<-data%>%
+      filter(icd10_2d%in%ICD[[i]])
+    
+    model<- clogit(patient~O3lag02+tmeanlag02+rhlag02+holidays+strata(id),method = "exact",data = data_i)
+    effect<-summary(model)$coefficients[1,1:5]
+    Teffect[i,"Cause"]<-data_i[2,16]
+    Teffect[i,"OR"] <-exp(effect[1]*10)
+    Teffect[i,"CIL"]<-exp(effect[1]*10-1.96*effect[3]*10)
+    Teffect[i,"CIH"]<-exp(effect[1]*10+1.96*effect[3]*10)
+    Teffect[i,"p-value"]<-effect[5]
+    Teffect[i,"coefficient"]<-effect[1]*10
+    Teffect[i,"sterror"]<-effect[3]
+    
+    ##progress
+    print(i)
+  },error=function(e){})}
+
+#Plot
+#Dose-response
+par(mfrow=c(2,2)) 
+
+basis<-onebasis(data$O3lag02,fun = "ns",df=4)
+
+model<- clogit(patient~basis+tmeanlag02+rhlag02+holidays+strata(id),method = "exact",data = mydata)
+
+
+pred<- crosspred(basis,model,at=300:1600/10,cen=30)
+
+x=expression(paste(Ozone, " concentration ",group("(",mu*g/{m^3}, ")")))
+
+plot(pred,col="red",xlab=x,ylab="RR (95%CI)")
+
+#Risk estimates by lag
+pd <- position_dodge(0.5)
+dat$lag<- factor(dat$lag ,levels = c("lag0","lag1","lag2","lag3",
+                                     "lag01","lag02","lag03"))
+f0<- ggplot(dat, aes(x=lag, y=OR)) + 
+  geom_errorbar(aes(ymin=CIL, ymax=CIH),  width=.3, position=pd,color=c("#00468BFF")) +
+  geom_point(size=3, fill="white",color=c("#00468BFF")) + # 21 is filled circle
+  xlab("") +
+  ylab("OR") +scale_fill_manual(name = "")+
+   geom_hline(yintercept=1, color="grey", size=1,linetype = "dashed")+
+  ggtitle("") +
+   theme_bw(15)+scale_color_manual(values = c("#00468BFF"))+
+  
+  theme(legend.position= c(.95, .15),
+        legend.text=element_text(size=12),
+        legend.title=element_text(size=12),
+        axis.text.y = element_text(size=12),
+        axis.text.x = element_text(size=12),
+        strip.text =element_text(size=14))              # Position legend in bottom right
+f0
+
+dat$Cause<- factor(dat$Cause ,levels = c("Oral","Nasopharynx","Oesophagus",
+                                         "Stomach","Colon-rectum","Liver","Gallbladder",
+                                         "Pancreas","Larynx","Lung","Bone",
+                                         "Skin","Breast","Cervix","Uterus",
+                                         "Ovary","Prostate","Testis","Kidney",
+                                         "Bladder","Brain","Thyroid","Lymphoma","Leukaemia"))
+
+
+
+f1<- dat %>%
+  mutate(text = Cause) %>%
+  ggplot( aes(x=lag, y=OR,ymin=CIL,ymax=CIH)) +
+  geom_pointrange(position = position_dodge(0.3),color="#00468BFF",size=0.5)+
+  geom_line() + 
+  geom_ribbon(alpha=0.2)+
+  geom_hline(yintercept=1, color="grey", size=1,linetype = "dashed")+
+  
+  theme(
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 8)
+  ) +labs(fill="Lag")+
+  xlab("Lag Days") +
+  ylab("OR (95%CI)") +
+  facet_wrap(~text)+theme_bw(15)+ggpubr::rotate_x_text(angle = 45)
+f1
+
+#violin plot
+plot<- dat%>%dplyr::group_by(citycode,year)%>%summarise(o3=mean(O3lag02,na.rm = TRUE))
+plot$year<- as.factor(plot$year)
+ggplot(plot, aes(x=year_cat, y=o3)) + 
+  geom_violin(trim=FALSE,color="#00468BFF")+
+  labs(title="",x="Year", y = "Ozone Concentration")+
+  geom_boxplot(width=0.1, fill="white",outlier.color = "#00468BFF",color="#00468BFF")+
+  theme_bw(15)
